@@ -210,8 +210,9 @@ int main(int argc, char **argv)
 
     ros::Publisher pubLaserCloudFullRes = nh.advertise<sensor_msgs::PointCloud2>("/velodyne_cloud_3", 100);
 
+    // 发布里程计姿态
     ros::Publisher pubLaserOdometry = nh.advertise<nav_msgs::Odometry>("/laser_odom_to_init", 100);
-
+    // 发布里程计路径
     ros::Publisher pubLaserPath = nh.advertise<nav_msgs::Path>("/laser_odom_path", 100);
 
     nav_msgs::Path laserPath;
@@ -235,6 +236,7 @@ int main(int argc, char **argv)
             timeSurfPointsLessFlat = surfLessFlatBuf.front()->header.stamp.toSec();
             timeLaserCloudFullRes = fullPointsBuf.front()->header.stamp.toSec();
 
+            // 数据不同布，报异常
             if (timeCornerPointsSharp != timeLaserCloudFullRes ||
                 timeCornerPointsLessSharp != timeLaserCloudFullRes ||
                 timeSurfPointsFlat != timeLaserCloudFullRes ||
@@ -275,6 +277,9 @@ int main(int argc, char **argv)
             }
             else
             {
+                // 每条扫描线只保存了2个sharp点和4个平面点 * 6，理论上总共的点数如下：
+                // sharp点：激光雷达线数 * 2 * 6
+                // flat点：激光雷达线数 * 4 * 6
                 int cornerPointsSharpNum = cornerPointsSharp->points.size();
                 int surfPointsFlatNum = surfPointsFlat->points.size();
 
@@ -290,6 +295,7 @@ int main(int argc, char **argv)
                         new ceres::EigenQuaternionParameterization();
                     ceres::Problem::Options problem_options;
 
+                    // 待优化姿态：四元数和三维向量
                     ceres::Problem problem(problem_options);
                     problem.AddParameterBlock(para_q, 4, q_parameterization);
                     problem.AddParameterBlock(para_t, 3);
@@ -303,15 +309,20 @@ int main(int argc, char **argv)
                     // find correspondence for corner features
                     for (int i = 0; i < cornerPointsSharpNum; ++i)
                     {
+                        // 基于扫描时间戳将点云转换到统一的坐标系中
                         TransformToStart(&(cornerPointsSharp->points[i]), &pointSel);
+                        // 基于kd-tree进行近邻匹配
                         kdtreeCornerLast->nearestKSearch(pointSel, 1, pointSearchInd, pointSearchSqDis);
 
+                        // 最近邻点满足阈值约束
                         int closestPointInd = -1, minPointInd2 = -1;
                         if (pointSearchSqDis[0] < DISTANCE_SQ_THRESHOLD)
                         {
+                            // 确定点云id
                             closestPointInd = pointSearchInd[0];
                             int closestPointScanID = int(laserCloudCornerLast->points[closestPointInd].intensity);
 
+                            // 沿着扫描线增加的方向来确定与当前点距离最近的第二个点云序号
                             double minPointSqDis2 = DISTANCE_SQ_THRESHOLD;
                             // search in the direction of increasing scan line
                             for (int j = closestPointInd + 1; j < (int)laserCloudCornerLast->points.size(); ++j)
@@ -339,6 +350,7 @@ int main(int argc, char **argv)
                                 }
                             }
 
+                            // 沿着扫描线减少的方向来确定与当前点距离最近的第二个点云序号，在第一波检索的基础上再搜索
                             // search in the direction of decreasing scan line
                             for (int j = closestPointInd - 1; j >= 0; --j)
                             {
@@ -365,6 +377,8 @@ int main(int argc, char **argv)
                                 }
                             }
                         }
+                        
+                        // 若最近点和次近点都能确定，则构建残差方程，确定当前sharp点到线之间的距离
                         if (minPointInd2 >= 0) // both closestPointInd and minPointInd2 is valid
                         {
                             Eigen::Vector3d curr_point(cornerPointsSharp->points[i].x,
@@ -392,9 +406,12 @@ int main(int argc, char **argv)
                     // find correspondence for plane features
                     for (int i = 0; i < surfPointsFlatNum; ++i)
                     {
+                        // 根据扫描线夹角计算偏移量，并进行畸变矫正
                         TransformToStart(&(surfPointsFlat->points[i]), &pointSel);
+                        // 基于kd-tree在上一帧中搜索与当前帧距离最近的点
                         kdtreeSurfLast->nearestKSearch(pointSel, 1, pointSearchInd, pointSearchSqDis);
 
+                        // 若找到了最近的点，距离满足约束条件，则沿着扫描线搜索第二，第三个近邻点
                         int closestPointInd = -1, minPointInd2 = -1, minPointInd3 = -1;
                         if (pointSearchSqDis[0] < DISTANCE_SQ_THRESHOLD)
                         {
@@ -460,6 +477,7 @@ int main(int argc, char **argv)
                                 }
                             }
 
+                            // 三点构建一个面，求解当前点云到该点的距离最小化，构建残差方程
                             if (minPointInd2 >= 0 && minPointInd3 >= 0)
                             {
 
@@ -561,6 +579,7 @@ int main(int argc, char **argv)
                 }
             }
 
+            // 保存当前帧的数据
             pcl::PointCloud<PointType>::Ptr laserCloudTemp = cornerPointsLessSharp;
             cornerPointsLessSharp = laserCloudCornerLast;
             laserCloudCornerLast = laserCloudTemp;
@@ -574,6 +593,7 @@ int main(int argc, char **argv)
 
             // std::cout << "the size of corner last is " << laserCloudCornerLastNum << ", and the size of surf last is " << laserCloudSurfLastNum << '\n';
 
+            // 将当前帧设置为kd-tree的输入点云，用于下一个帧点云的最近邻搜索源
             kdtreeCornerLast->setInputCloud(laserCloudCornerLast);
             kdtreeSurfLast->setInputCloud(laserCloudSurfLast);
 

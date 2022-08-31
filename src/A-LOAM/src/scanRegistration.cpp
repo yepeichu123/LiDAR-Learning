@@ -246,7 +246,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
             }
         }
 
-        // 根据扫描线id存储点云信息，包括坐标、
+        // 根据扫描线id存储点云信息，包括坐标、点云强度
         float relTime = (ori - startOri) / (endOri - startOri);
         point.intensity = scanID + scanPeriod * relTime;
         laserCloudScans[scanID].push_back(point); 
@@ -319,7 +319,8 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
                 if (cloudNeighborPicked[ind] == 0 &&
                     cloudCurvature[ind] > 0.1)
                 {
-
+                    // 由于是倒序处理，则曲率最大的是前两个点．
+                    // sharp点存储2个，less sharp点至多存储20个
                     largestPickedNum++;
                     if (largestPickedNum <= 2)
                     {                        
@@ -339,7 +340,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
 
                     cloudNeighborPicked[ind] = 1; 
 
-                    // 点云距离太远则丢弃，否则标记邻域选择
+                    // 进行邻域信息标记，若相邻两个点之间的距离小于0.05m,则视为邻域点,否则跳过
                     for (int l = 1; l <= 5; l++)
                     {
                         float diffX = laserCloud->points[ind + l].x - laserCloud->points[ind + l - 1].x;
@@ -373,20 +374,22 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
             {
                 int ind = cloudSortInd[k];
 
-                // 未赋值邻域并且曲率较小的点
+                // 不属于sharp点或less sharp点邻域的点，并且曲率较小，接近平面
                 if (cloudNeighborPicked[ind] == 0 &&
                     cloudCurvature[ind] < 0.1)
                 {
-
+                    // 存储flat平面点，并在label中进行标记
                     cloudLabel[ind] = -1; 
                     surfPointsFlat.push_back(laserCloud->points[ind]);
 
+                    // 只存储４个点
                     smallestPickedNum++;
                     if (smallestPickedNum >= 4)
                     { 
                         break;
                     }
 
+                    // 根据相邻点云之间的距离，来确定是否为当前选择点的邻域，避免后续提取特征的时候又提到
                     cloudNeighborPicked[ind] = 1;
                     for (int l = 1; l <= 5; l++)
                     { 
@@ -425,7 +428,7 @@ void laserCloudHandler(const sensor_msgs::PointCloud2ConstPtr &laserCloudMsg)
             }
         }
 
-        // 对所有平面点进行滤波，通常来说平面点的数量都是大于sharp点的
+        // 对所有平面点进行滤波，通常来说平面点的数量都是小于sharp点的
         pcl::PointCloud<PointType> surfPointsLessFlatScanDS;
         pcl::VoxelGrid<PointType> downSizeFilter;
         downSizeFilter.setInputCloud(surfPointsLessFlatScan);

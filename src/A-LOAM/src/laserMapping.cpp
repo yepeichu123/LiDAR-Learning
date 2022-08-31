@@ -319,6 +319,7 @@ void process()
 			// T_oc --> T_wc
 			transformAssociateToMap();
 
+			// 确定局部地图的中点坐标
 			TicToc t_shift;
 			int centerCubeI = int((t_w_curr.x() + 25.0) / 50.0) + laserCloudCenWidth;
 			int centerCubeJ = int((t_w_curr.y() + 25.0) / 50.0) + laserCloudCenHeight;
@@ -331,6 +332,7 @@ void process()
 			if (t_w_curr.z() + 25.0 < 0)
 				centerCubeK--;
 
+			// 若方块中心太小或太大，则将整体点云数据进行挪动
 			// 将所有sharp点和所有flat点按照id顺序往前挪动，将第n维的点赋值给第0维，第0维就赋值给第1维，...
 			while (centerCubeI < 3)
 			{
@@ -521,6 +523,7 @@ void process()
 			int laserCloudValidNum = 0;
 			int laserCloudSurroundNum = 0;
 
+			// 确定有效点云序号
 			for (int i = centerCubeI - 2; i <= centerCubeI + 2; i++)
 			{
 				for (int j = centerCubeJ - 2; j <= centerCubeJ + 2; j++)
@@ -540,6 +543,7 @@ void process()
 				}
 			}
 
+			// 根据有效点序号，确定局部sharp点云和flat点云子地图
 			laserCloudCornerFromMap->clear();
 			laserCloudSurfFromMap->clear();
 			for (int i = 0; i < laserCloudValidNum; i++)
@@ -550,7 +554,7 @@ void process()
 			int laserCloudCornerFromMapNum = laserCloudCornerFromMap->points.size();
 			int laserCloudSurfFromMapNum = laserCloudSurfFromMap->points.size();
 
-
+			// 点云子地图过滤
 			pcl::PointCloud<PointType>::Ptr laserCloudCornerStack(new pcl::PointCloud<PointType>());
 			downSizeFilterCorner.setInputCloud(laserCloudCornerLast);
 			downSizeFilterCorner.filter(*laserCloudCornerStack);
@@ -561,10 +565,12 @@ void process()
 			downSizeFilterSurf.filter(*laserCloudSurfStack);
 			int laserCloudSurfStackNum = laserCloudSurfStack->points.size();
 
+			// sharp点数量必须超过10，flat点数量必须超过50，否则直接退出
 			printf("map prepare time %f ms\n", t_shift.toc());
 			printf("map corner num %d  surf num %d \n", laserCloudCornerFromMapNum, laserCloudSurfFromMapNum);
 			if (laserCloudCornerFromMapNum > 10 && laserCloudSurfFromMapNum > 50)
 			{
+				// kd-tree设置搜索源，输入点云在kd-tree中搜索局部地图的最近邻点
 				TicToc t_opt;
 				TicToc t_tree;
 				kdtreeCornerFromMap->setInputCloud(laserCloudCornerFromMap);
@@ -579,6 +585,7 @@ void process()
 						new ceres::EigenQuaternionParameterization();
 					ceres::Problem::Options problem_options;
 
+					// 构建待优化变量
 					ceres::Problem problem(problem_options);
 					problem.AddParameterBlock(parameters, 4, q_parameterization);
 					problem.AddParameterBlock(parameters + 4, 3);
@@ -586,15 +593,21 @@ void process()
 					TicToc t_data;
 					int corner_num = 0;
 
+					// 遍历所有滤波sharp点云
 					for (int i = 0; i < laserCloudCornerStackNum; i++)
 					{
+						// 将输入点云转换到全局地图坐标系中
 						pointOri = laserCloudCornerStack->points[i];
 						//double sqrtDis = pointOri.x * pointOri.x + pointOri.y * pointOri.y + pointOri.z * pointOri.z;
 						pointAssociateToMap(&pointOri, &pointSel);
+
+						// kd-tree近邻搜索，搜索与当前点云最近的5个点
 						kdtreeCornerFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis); 
 
+						// 若当前点与第５个最近点的距离小于1m
 						if (pointSearchSqDis[4] < 1.0)
-						{ 
+						{
+							// 将五个近邻点全部保存，并计算平均值
 							std::vector<Eigen::Vector3d> nearCorners;
 							Eigen::Vector3d center(0, 0, 0);
 							for (int j = 0; j < 5; j++)
@@ -607,6 +620,7 @@ void process()
 							}
 							center = center / 5.0;
 
+							// 计算均值和方差
 							Eigen::Matrix3d covMat = Eigen::Matrix3d::Zero();
 							for (int j = 0; j < 5; j++)
 							{
@@ -614,6 +628,9 @@ void process()
 								covMat = covMat + tmpZeroMean * tmpZeroMean.transpose();
 							}
 
+							// 基于方差矩阵M进行特征值分解，得到特征值V和特征向量E，如果５个邻域点都在一条线上
+							// 则特征值分解的三个特征中，会有一个比较大的特征值，位于最后一维
+							// 取对应的特征向量，则得到线的方向向量
 							Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(covMat);
 
 							// if is indeed line feature
@@ -622,11 +639,13 @@ void process()
 							Eigen::Vector3d curr_point(pointOri.x, pointOri.y, pointOri.z);
 							if (saes.eigenvalues()[2] > 3 * saes.eigenvalues()[1])
 							{ 
+								// 基于中点和线方向，确定一条匹配线
 								Eigen::Vector3d point_on_line = center;
 								Eigen::Vector3d point_a, point_b;
 								point_a = 0.1 * unit_direction + point_on_line;
 								point_b = -0.1 * unit_direction + point_on_line;
 
+								// 构建点和线之间的残差
 								ceres::CostFunction *cost_function = LidarEdgeFactor::Create(curr_point, point_a, point_b, 1.0);
 								problem.AddResidualBlock(cost_function, loss_function, parameters, parameters + 4);
 								corner_num++;	
@@ -651,19 +670,23 @@ void process()
 						*/
 					}
 
+					// 遍历所有滤波flat点云
 					int surf_num = 0;
 					for (int i = 0; i < laserCloudSurfStackNum; i++)
 					{
+						// 将点云转换到全局地图坐标系中
 						pointOri = laserCloudSurfStack->points[i];
 						//double sqrtDis = pointOri.x * pointOri.x + pointOri.y * pointOri.y + pointOri.z * pointOri.z;
 						pointAssociateToMap(&pointOri, &pointSel);
+						// 在kd-tree中搜索与当前点最近的5个点云
 						kdtreeSurfFromMap->nearestKSearch(pointSel, 5, pointSearchInd, pointSearchSqDis);
 
+						// 使用Ax = b求解平面法向量
 						Eigen::Matrix<double, 5, 3> matA0;
 						Eigen::Matrix<double, 5, 1> matB0 = -1 * Eigen::Matrix<double, 5, 1>::Ones();
 						if (pointSearchSqDis[4] < 1.0)
 						{
-							
+
 							for (int j = 0; j < 5; j++)
 							{
 								matA0(j, 0) = laserCloudSurfFromMap->points[pointSearchInd[j]].x;
@@ -676,6 +699,7 @@ void process()
 							double negative_OA_dot_norm = 1 / norm.norm();
 							norm.normalize();
 
+							// 理论上每个点都应该接近０
 							// Here n(pa, pb, pc) is unit norm of plane
 							bool planeValid = true;
 							for (int j = 0; j < 5; j++)
@@ -689,6 +713,8 @@ void process()
 									break;
 								}
 							}
+
+							// 构建点和面之间的距离
 							Eigen::Vector3d curr_point(pointOri.x, pointOri.y, pointOri.z);
 							if (planeValid)
 							{
@@ -721,6 +747,7 @@ void process()
 
 					printf("mapping data assosiation time %f ms \n", t_data.toc());
 
+					// 最大迭代次数为4，进行求解
 					TicToc t_solver;
 					ceres::Solver::Options options;
 					options.linear_solver_type = ceres::DENSE_QR;
@@ -745,6 +772,7 @@ void process()
 			}
 			transformUpdate();
 
+			// 更新局部地图信息
 			TicToc t_add;
 			for (int i = 0; i < laserCloudCornerStackNum; i++)
 			{
@@ -769,7 +797,6 @@ void process()
 					laserCloudCornerArray[cubeInd]->push_back(pointSel);
 				}
 			}
-
 			for (int i = 0; i < laserCloudSurfStackNum; i++)
 			{
 				pointAssociateToMap(&laserCloudSurfStack->points[i], &pointSel);
@@ -795,7 +822,7 @@ void process()
 			}
 			printf("add points time %f ms\n", t_add.toc());
 
-			
+			// 对最终的点云数据进行滤波
 			TicToc t_filter;
 			for (int i = 0; i < laserCloudValidNum; i++)
 			{
@@ -847,12 +874,14 @@ void process()
 				pubLaserCloudMap.publish(laserCloudMsg);
 			}
 
+			// 将所有点云数据转换到地图世界坐标系
 			int laserCloudFullResNum = laserCloudFullRes->points.size();
 			for (int i = 0; i < laserCloudFullResNum; i++)
 			{
 				pointAssociateToMap(&laserCloudFullRes->points[i], &laserCloudFullRes->points[i]);
 			}
 
+			//　发布点云数据
 			sensor_msgs::PointCloud2 laserCloudFullRes3;
 			pcl::toROSMsg(*laserCloudFullRes, laserCloudFullRes3);
 			laserCloudFullRes3.header.stamp = ros::Time().fromSec(timeLaserOdometry);
@@ -863,6 +892,7 @@ void process()
 
 			printf("whole mapping time %f ms +++++\n", t_whole.toc());
 
+			// 发布当前帧在世界坐标系下的姿态
 			nav_msgs::Odometry odomAftMapped;
 			odomAftMapped.header.frame_id = "/camera_init";
 			odomAftMapped.child_frame_id = "/aft_mapped";
@@ -876,6 +906,7 @@ void process()
 			odomAftMapped.pose.pose.position.z = t_w_curr.z();
 			pubOdomAftMapped.publish(odomAftMapped);
 
+			// 发布规划的路径
 			geometry_msgs::PoseStamped laserAfterMappedPose;
 			laserAfterMappedPose.header = odomAftMapped.header;
 			laserAfterMappedPose.pose = odomAftMapped.pose.pose;
@@ -884,6 +915,7 @@ void process()
 			laserAfterMappedPath.poses.push_back(laserAfterMappedPose);
 			pubLaserAfterMappedPath.publish(laserAfterMappedPath);
 
+			// 发布tf变换
 			static tf::TransformBroadcaster br;
 			tf::Transform transform;
 			tf::Quaternion q;
@@ -914,7 +946,9 @@ int main(int argc, char **argv)
 	nh.param<float>("mapping_line_resolution", lineRes, 0.4);
 	nh.param<float>("mapping_plane_resolution", planeRes, 0.8);
 	printf("line resolution %f plane resolution %f \n", lineRes, planeRes);
+	// sharp点设置0.4*0.4*0.4的滤波分辨率
 	downSizeFilterCorner.setLeafSize(lineRes, lineRes,lineRes);
+	// flat点设置0.8*0.8*0.8的滤波分辨率
 	downSizeFilterSurf.setLeafSize(planeRes, planeRes, planeRes);
 
 	// 订阅sharp点和flat点
@@ -939,6 +973,7 @@ int main(int argc, char **argv)
 
 	pubLaserAfterMappedPath = nh.advertise<nav_msgs::Path>("/aft_mapped_path", 100);
 
+	// 分配点云内存大小
 	for (int i = 0; i < laserCloudNum; i++)
 	{
 		laserCloudCornerArray[i].reset(new pcl::PointCloud<PointType>());
